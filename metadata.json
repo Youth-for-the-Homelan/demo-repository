@@ -1,0 +1,6 @@
+{
+  "name": "Prophetic Ethical AI Simulator",
+  "description": "Interactive simulation of the 9-layer Prophet-Inspired AI System Architecture (PIAISA), proving ethics, Shura-governance, and trust graphs in community scenarios.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

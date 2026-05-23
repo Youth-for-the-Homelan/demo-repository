@@ -1,8 +1,20 @@
-![Auto Assign](https://github.com/Youth-for-the-Homelan/demo-repository/actions/workflows/auto-assign.yml/badge.svg)
+<div align="center">
+<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
+</div>
 
-![Proof HTML](https://github.com/Youth-for-the-Homelan/demo-repository/actions/workflows/proof-html.yml/badge.svg)
+# Run and deploy your AI Studio app
 
-# Welcome to your organization's demo respository
-This code repository (or "repo") is designed to demonstrate the best GitHub has to offer with the least amount of noise.
+This contains everything you need to run your app locally.
 
-The repo includes an `index.html` file (so it can render a web page), two GitHub Actions workflows, and a CSS stylesheet dependency.
+View your app in AI Studio: https://ai.studio/apps/19d5d0d1-5c67-4861-839e-bf04d384e5d7
+
+## Run Locally
+
+**Prerequisites:**  Node.js
+
+
+1. Install dependencies:
+   `npm install`
+2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+3. Run the app:
+   `npm run dev`

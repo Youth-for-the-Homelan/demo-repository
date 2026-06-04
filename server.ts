@@ -1,5 +1,7 @@
 import express from "express";
 import path from "path";
+import fs from "fs";
+import mysql, { Pool } from "mysql2/promise";
 import dotenv from "dotenv";
 import { GoogleGenAI, Type } from "@google/genai";
 import { createServer as createViteServer } from "vite";
@@ -10,6 +12,283 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json());
+
+
+type DatabaseConnectionStatus = {
+  configured: boolean;
+  connected: boolean;
+  database: string;
+  host: string;
+  error?: string;
+};
+
+type RowMap = Record<string, string | number | boolean | null>;
+
+const databaseName = process.env.DB_NAME || "youth_for_homeland";
+const databaseHost = process.env.DB_HOST || "localhost";
+const databasePort = Number(process.env.DB_PORT || 3306);
+const databaseUser = process.env.DB_USER;
+const databasePassword = process.env.DB_PASSWORD;
+
+let databasePool: Pool | null = null;
+
+function getDatabasePool() {
+  if (!databaseUser) {
+    return null;
+  }
+
+  if (!databasePool) {
+    databasePool = mysql.createPool({
+      host: databaseHost,
+      port: databasePort,
+      user: databaseUser,
+      password: databasePassword,
+      database: databaseName,
+      waitForConnections: true,
+      connectionLimit: 10,
+      namedPlaceholders: true,
+      charset: "utf8mb4",
+    });
+  }
+
+  return databasePool;
+}
+
+async function getDatabaseStatus(): Promise<DatabaseConnectionStatus> {
+  const pool = getDatabasePool();
+  const baseStatus = {
+    configured: Boolean(databaseUser),
+    connected: false,
+    database: databaseName,
+    host: `${databaseHost}:${databasePort}`,
+  };
+
+  if (!pool) {
+    return {
+      ...baseStatus,
+      error: "Set DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, and DB_NAME to enable live MySQL data.",
+    };
+  }
+
+  try {
+    await pool.query("SELECT 1");
+    return { ...baseStatus, connected: true };
+  } catch (error: any) {
+    return { ...baseStatus, error: error?.message || "Unable to connect to MySQL." };
+  }
+}
+
+async function queryRows<T extends RowMap>(sql: string, values: any[] = []) {
+  const pool = getDatabasePool();
+  if (!pool) {
+    throw Object.assign(new Error("Database connection is not configured."), { statusCode: 503 });
+  }
+
+  const [rows] = await pool.execute(sql, values);
+  return rows as T[];
+}
+
+async function executeWrite(sql: string, values: any[] = []) {
+  const pool = getDatabasePool();
+  if (!pool) {
+    throw Object.assign(new Error("Database connection is not configured."), { statusCode: 503 });
+  }
+
+  const [result] = await pool.execute(sql, values);
+  return result as mysql.ResultSetHeader;
+}
+
+function parseSchemaSummary() {
+  const schemaPath = path.join(process.cwd(), "database", "youth_for_homeland_schema.sql");
+  const schemaSql = fs.readFileSync(schemaPath, "utf8");
+  const tables = Array.from(schemaSql.matchAll(/CREATE TABLE IF NOT EXISTS\s+(\w+)/g)).map((match) => match[1]);
+  const foreignKeys = Array.from(schemaSql.matchAll(/FOREIGN KEY \((\w+)\) REFERENCES (\w+)\((\w+)\)/g)).map(
+    (match) => ({ column: match[1], referencesTable: match[2], referencesColumn: match[3] }),
+  );
+
+  return {
+    database: databaseName,
+    tables,
+    tableCount: tables.length,
+    foreignKeyCount: foreignKeys.length,
+    foreignKeys,
+  };
+}
+
+function handleApiError(res: express.Response, error: any) {
+  const statusCode = error?.statusCode || 500;
+  res.status(statusCode).json({ error: error?.message || "Unexpected server error." });
+}
+
+app.get("/api/database/status", async (_req, res) => {
+  res.json(await getDatabaseStatus());
+});
+
+app.get("/api/database/schema", (_req, res) => {
+  res.json(parseSchemaSummary());
+});
+
+app.get("/api/dashboard", async (_req, res) => {
+  try {
+    const [departments, members, projects, donations, expenses, activities, beneficiaries] = await Promise.all([
+      queryRows<{ total: number }>("SELECT COUNT(*) AS total FROM Departments"),
+      queryRows<{ total: number }>("SELECT COUNT(*) AS total FROM Members"),
+      queryRows<{ total: number }>("SELECT COUNT(*) AS total FROM Projects"),
+      queryRows<{ total: number }>("SELECT COALESCE(SUM(Amount), 0) AS total FROM Donations"),
+      queryRows<{ total: number }>("SELECT COALESCE(SUM(Amount), 0) AS total FROM Expenses"),
+      queryRows<{ total: number }>("SELECT COUNT(*) AS total FROM Activities"),
+      queryRows<{ total: number }>("SELECT COUNT(*) AS total FROM Beneficiaries"),
+    ]);
+
+    res.json({
+      departmentCount: departments[0]?.total || 0,
+      memberCount: members[0]?.total || 0,
+      projectCount: projects[0]?.total || 0,
+      donationTotal: Number(donations[0]?.total || 0),
+      expenseTotal: Number(expenses[0]?.total || 0),
+      activityCount: activities[0]?.total || 0,
+      beneficiaryCount: beneficiaries[0]?.total || 0,
+    });
+  } catch (error) {
+    handleApiError(res, error);
+  }
+});
+
+app.get("/api/departments", async (_req, res) => {
+  try {
+    const rows = await queryRows(
+      `SELECT d.DepartmentID, d.DepartmentName, d.Description, d.CreationDate, d.Status,
+              COUNT(m.MemberID) AS MemberCount
+       FROM Departments d
+       LEFT JOIN Members m ON m.DepartmentID = d.DepartmentID
+       GROUP BY d.DepartmentID
+       ORDER BY d.DepartmentName`,
+    );
+    res.json(rows);
+  } catch (error) {
+    handleApiError(res, error);
+  }
+});
+
+app.post("/api/departments", async (req, res) => {
+  try {
+    const { DepartmentName, Description, Status } = req.body;
+    if (!DepartmentName || typeof DepartmentName !== "string") {
+      return res.status(400).json({ error: "DepartmentName is required." });
+    }
+
+    const result = await executeWrite(
+      "INSERT INTO Departments (DepartmentName, Description, CreationDate, Status) VALUES (?, ?, CURRENT_DATE, ?)",
+      [DepartmentName.trim(), Description || null, Status || "Active"],
+    );
+    res.status(201).json({ DepartmentID: result.insertId });
+  } catch (error) {
+    handleApiError(res, error);
+  }
+});
+
+app.get("/api/members", async (_req, res) => {
+  try {
+    const rows = await queryRows(
+      `SELECT m.MemberID, m.FullName, m.Gender, m.Phone, m.Email, m.JoinDate, m.Status,
+              d.DepartmentName
+       FROM Members m
+       LEFT JOIN Departments d ON d.DepartmentID = m.DepartmentID
+       ORDER BY m.MemberID DESC
+       LIMIT 100`,
+    );
+    res.json(rows);
+  } catch (error) {
+    handleApiError(res, error);
+  }
+});
+
+app.post("/api/members", async (req, res) => {
+  try {
+    const { FullName, Gender, Phone, Email, Address, DepartmentID, Status } = req.body;
+    if (!FullName || typeof FullName !== "string") {
+      return res.status(400).json({ error: "FullName is required." });
+    }
+
+    const result = await executeWrite(
+      `INSERT INTO Members (FullName, Gender, Phone, Email, Address, JoinDate, DepartmentID, Status)
+       VALUES (?, ?, ?, ?, ?, CURRENT_DATE, ?, ?)`,
+      [FullName.trim(), Gender || null, Phone || null, Email || null, Address || null, DepartmentID || null, Status || "Active"],
+    );
+    res.status(201).json({ MemberID: result.insertId });
+  } catch (error) {
+    handleApiError(res, error);
+  }
+});
+
+app.get("/api/projects", async (_req, res) => {
+  try {
+    const rows = await queryRows(
+      `SELECT p.ProjectID, p.ProjectName, p.StartDate, p.EndDate, p.Budget, p.Status,
+              pr.ProgramName, d.DepartmentName, m.FullName AS ProjectManager
+       FROM Projects p
+       LEFT JOIN Programs pr ON pr.ProgramID = p.ProgramID
+       LEFT JOIN Departments d ON d.DepartmentID = p.DepartmentID
+       LEFT JOIN Managers mg ON mg.ManagerID = p.ProjectManagerID
+       LEFT JOIN Members m ON m.MemberID = mg.MemberID
+       ORDER BY p.ProjectID DESC
+       LIMIT 100`,
+    );
+    res.json(rows);
+  } catch (error) {
+    handleApiError(res, error);
+  }
+});
+
+app.post("/api/projects", async (req, res) => {
+  try {
+    const { ProjectName, Description, DepartmentID, Budget, Status } = req.body;
+    if (!ProjectName || typeof ProjectName !== "string") {
+      return res.status(400).json({ error: "ProjectName is required." });
+    }
+
+    const result = await executeWrite(
+      `INSERT INTO Projects (DepartmentID, ProjectName, Description, StartDate, Budget, Status)
+       VALUES (?, ?, ?, CURRENT_DATE, ?, ?)`,
+      [DepartmentID || null, ProjectName.trim(), Description || null, Number(Budget || 0), Status || "Planned"],
+    );
+    res.status(201).json({ ProjectID: result.insertId });
+  } catch (error) {
+    handleApiError(res, error);
+  }
+});
+
+app.get("/api/donations", async (_req, res) => {
+  try {
+    const rows = await queryRows(
+      `SELECT DonationID, DonorName, DonorPhone, Amount, DonationDate, Purpose, PaymentMethod, ReceiptNumber
+       FROM Donations
+       ORDER BY DonationID DESC
+       LIMIT 100`,
+    );
+    res.json(rows);
+  } catch (error) {
+    handleApiError(res, error);
+  }
+});
+
+app.post("/api/donations", async (req, res) => {
+  try {
+    const { DonorName, DonorPhone, Amount, Purpose, PaymentMethod, ReceiptNumber } = req.body;
+    if (!DonorName || typeof DonorName !== "string") {
+      return res.status(400).json({ error: "DonorName is required." });
+    }
+
+    const result = await executeWrite(
+      `INSERT INTO Donations (DonorName, DonorPhone, Amount, DonationDate, Purpose, PaymentMethod, ReceiptNumber)
+       VALUES (?, ?, ?, CURRENT_DATE, ?, ?, ?)`,
+      [DonorName.trim(), DonorPhone || null, Number(Amount || 0), Purpose || null, PaymentMethod || null, ReceiptNumber || null],
+    );
+    res.status(201).json({ DonationID: result.insertId });
+  } catch (error) {
+    handleApiError(res, error);
+  }
+});
 
 // Lazy Gemini API Client Initialization
 let aiClient: GoogleGenAI | null = null;

@@ -1,0 +1,34 @@
+name: BOOGYEMAN Swarm Core CI
+
+on:
+  push:
+    paths:
+      - "experiments/boogyeman-swarm/**"
+      - ".github/workflows/boogyeman-swarm-ci.yml"
+  pull_request:
+    paths:
+      - "experiments/boogyeman-swarm/**"
+      - ".github/workflows/boogyeman-swarm-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: boogyeman-swarm-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-swarm-core:
+    name: Test bounded swarm engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source (pinned action)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run isolated engine unit tests
+        env:
+          CI: "true"
+        run: node --test experiments/boogyeman-swarm/engine.test.mjs

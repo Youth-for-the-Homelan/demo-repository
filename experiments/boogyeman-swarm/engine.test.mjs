@@ -9,6 +9,7 @@ import {
   spawnChildBot,
   validateCandidate,
 } from "./engine.mjs";
+import { assessRunnerAdapter } from "./runner-adapter-contract.mjs";
 
 test("candidate generation is bounded and reproducible for a fixed seed", () => {
   const bot = DEFAULT_BOTS.find((entry) => entry.role === "builder");
@@ -62,4 +63,18 @@ test("an aborted run stops without creating a project", async () => {
 test("attempt limits are normalized to a hard cap", async () => {
   const result = await runSwarm({ goal: "Test bounded retries", maxAttempts: MAX_ATTEMPTS + 500, runId: 204 });
   assert.ok(result.attempts <= MAX_ATTEMPTS);
+});
+
+test("runner contract blocks missing and unsafe isolation controls", () => {
+  assert.equal(assessRunnerAdapter(null).status, "BLOCKED");
+  const unsafe = assessRunnerAdapter({ id: "demo", version: "0.1", isolated: false, networkDefault: "open", ephemeralWorkspace: false, supportsTimeout: true, supportsMemoryLimit: false, supportsCpuLimit: false, supportsOutputLimit: true, supportsCancellation: false });
+  assert.equal(unsafe.ready, false);
+  assert.ok(unsafe.missing.includes("isolation"));
+  assert.ok(unsafe.missing.includes("network deny/allowlist policy"));
+  assert.ok(unsafe.missing.includes("memory limit"));
+});
+
+test("complete adapter metadata only qualifies for review, not a runtime safety guarantee", () => {
+  const result = assessRunnerAdapter({ id: "isolated-runner", version: "1.0", isolated: true, networkDefault: "denied", ephemeralWorkspace: true, supportsTimeout: true, supportsMemoryLimit: true, supportsCpuLimit: true, supportsOutputLimit: true, supportsCancellation: true });
+  assert.deepEqual(result, { status: "READY_FOR_REVIEW", ready: true, missing: [] });
 });

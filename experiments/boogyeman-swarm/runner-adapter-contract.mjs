@@ -14,7 +14,7 @@ export function assessRunnerAdapter(adapter) {
   if (!new Set(["denied", "allowlisted"]).has(adapter.networkDefault)) missing.push("network deny/allowlist policy");
   if (adapter.ephemeralWorkspace !== true) missing.push("ephemeral workspace cleanup");
   for (const capability of ["supportsTimeout", "supportsMemoryLimit", "supportsCpuLimit", "supportsOutputLimit", "supportsCancellation"]) {
-    if (adapter[capability] !== true) missing.push(capability.replace(/^supports/, "").replace(/([A-Z])/g, " $1").toLowerCase());
+    if (adapter[capability] !== true) missing.push(capability.replace(/^supports/, "").replace(/([A-Z])/g, " $1").trim().toLowerCase());
   }
   return { status: missing.length ? "BLOCKED" : "READY_FOR_REVIEW", ready: missing.length === 0, missing };
 }
